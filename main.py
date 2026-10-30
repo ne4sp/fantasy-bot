@@ -277,24 +277,13 @@ def _match_images(tour: int) -> list[bytes]:
 
 
 def _overall_image(tour: int) -> bytes:
-    lead = h2h_service.leader(h2h_conn)
+    """Общий зачёт H2H после тура N — картинкой, без текстовой таблицы."""
+    lead = h2h_service.leader(h2h_conn, upto=tour)
     img = h2h_render.render_overall(
-        h2h_service.tour_table(h2h_conn, tour),
+        h2h_service.table_rows(h2h_conn, upto=tour),
         _emblem_path(lead) if lead else None,
     )
     return _png(img)
-
-
-def _standings_text() -> str:
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    lines = ["🏆 <b>H2H — таблица</b>"]
-    for i, row in enumerate(h2h_service.standings(h2h_conn), 1):
-        prefix = medals.get(i, f"{i}.")
-        lines.append(
-            f"{prefix} <code>{h2h_service.name(row['key'])}</code> — "
-            f"<b>{row['points']}</b> очк. ({row['w']}-{row['d']}-{row['l']})"
-        )
-    return "\n".join(lines)
 
 
 async def _send_photos(chat_id: int, images: list[bytes], caption: str | None = None) -> None:
@@ -316,7 +305,7 @@ async def _send_tour_results(chat_id: int, tour: int) -> None:
     await bot.send_photo(
         chat_id,
         BufferedInputFile(_overall_image(tour), filename=f"overall_{tour}.jpg"),
-        caption=f"📊 <b>Итоги {tour} тура</b> — очки H2H",
+        caption=f"🏆 <b>Общий зачёт H2H после {tour} тура</b>",
         parse_mode="HTML",
     )
 
@@ -349,8 +338,6 @@ async def cmd_h2h(message: types.Message):
         return
 
     await _send_tour_results(message.chat.id, tour)
-    if len(parts) == 1:
-        await message.answer(_standings_text(), parse_mode="HTML")
 
 
 async def announce_h2h_results():
@@ -375,7 +362,6 @@ async def announce_h2h_results():
             continue
 
         await _send_tour_results(GROUP_ID, tour)
-        await bot.send_message(GROUP_ID, _standings_text(), parse_mode="HTML")
         h2h_db.set_meta(h2h_conn, f"announced:{tour}", "1")
         h2h_conn.commit()
 

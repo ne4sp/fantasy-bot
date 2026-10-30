@@ -38,11 +38,16 @@ def tour_matches(conn: sqlite3.Connection, tour: int) -> list[dict]:
     return matches
 
 
-def standings(conn: sqlite3.Connection) -> list[dict]:
+def standings(conn: sqlite3.Connection, upto: int | None = None) -> list[dict]:
+    """Общий зачёт H2H; upto — считать только туры по номер N включительно."""
     stats = {p["key"]: {"key": p["key"], "w": 0, "d": 0, "l": 0, "points": 0, "score": 0}
              for p in config.PLAYERS}
 
-    for tour in db.finished_tours(conn):
+    tours = db.finished_tours(conn)
+    if upto is not None:
+        tours = [tour for tour in tours if tour <= upto]
+
+    for tour in tours:
         for match in tour_matches(conn, tour):
             home, away = match["home"], match["away"]
             stats[home]["score"] += match["score_home"]
@@ -61,33 +66,11 @@ def standings(conn: sqlite3.Connection) -> list[dict]:
     return sorted(stats.values(), key=lambda s: (-s["points"], -s["score"]))
 
 
-def leader(conn: sqlite3.Connection) -> str | None:
-    table = standings(conn)
+def leader(conn: sqlite3.Connection, upto: int | None = None) -> str | None:
+    table = standings(conn, upto)
     return table[0]["key"] if table else None
 
 
-def tour_h2h_points(conn: sqlite3.Connection, tour: int) -> dict[str, int]:
-    """Очки H2H, набранные участниками в туре (3/1/0)."""
-    scores = db.tour_scores(conn, tour)
-    points = {p["key"]: 0 for p in config.PLAYERS}
-    for a, b in config.pairs_for_tour(tour):
-        if a not in scores or b not in scores:
-            return {}
-        if scores[a] > scores[b]:
-            points[a] += config.WIN_POINTS
-        elif scores[b] > scores[a]:
-            points[b] += config.WIN_POINTS
-        else:
-            points[a] += config.DRAW_POINTS
-            points[b] += config.DRAW_POINTS
-    return points
-
-
-def tour_table(conn: sqlite3.Connection, tour: int) -> list[tuple[str, int]]:
-    """Участники тура по убыванию очков H2H; при равенстве — по очкам фэнтези."""
-    points = tour_h2h_points(conn, tour)
-    if not points:
-        return []
-    scores = db.tour_scores(conn, tour)
-    ordered = sorted(points.items(), key=lambda kv: (-kv[1], -scores.get(kv[0], 0)))
-    return [(name(key), value) for key, value in ordered]
+def table_rows(conn: sqlite3.Connection, upto: int | None = None) -> list[tuple[str, int]]:
+    """Общий зачёт в виде строк для карточки: (имя, очки H2H)."""
+    return [(name(row["key"]), row["points"]) for row in standings(conn, upto)]
