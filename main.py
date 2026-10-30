@@ -1,11 +1,19 @@
 import asyncio, httpx
+import io
 import os
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import BufferedInputFile, InputMediaPhoto
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
+
+from h2h import config as h2h_config
+from h2h import data as h2h_data
+from h2h import db as h2h_db
+from h2h import render as h2h_render
+from h2h import service as h2h_service
 
 load_dotenv()
 
@@ -94,6 +102,9 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 # Явно задаём таймзону, а не полагаемся на TZ/tzset (в slim-образе нет /usr/share/zoneinfo).
 scheduler = AsyncIOScheduler(timezone=MOSCOW)
+
+H2H_DB = os.getenv("H2H_DB", "h2h.db")
+h2h_conn = h2h_db.connect(H2H_DB)
 
 
 async def get_deadline_data():
@@ -239,6 +250,135 @@ async def get_league_table(message: types.Message):
             await message.answer(f"❌ Ошибка загрузки данных: {e}")
 
 
+def _emblem_path(key: str) -> str:
+    return os.path.join(h2h_render.EMBLEMS, h2h_service.emblem(key))
+
+
+def _png(img) -> bytes:
+    """Карточка уходит в Telegram как фото, поэтому JPEG (PNG ~1.4 МБ)."""
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=92, optimize=True)
+    return buf.getvalue()
+
+
+def _match_images(tour: int) -> list[bytes]:
+    images = []
+    for m in h2h_service.tour_matches(h2h_conn, tour):
+        img = h2h_render.render_match(
+            h2h_service.name(m["winner"]),
+            h2h_service.name(m["loser"]),
+            m["winner_score"],
+            m["loser_score"],
+            _emblem_path(m["winner"]),
+        )
+        images.append(_png(img))
+    return images
+
+
+def _overall_image(tour: int) -> bytes:
+    lead = h2h_service.leader(h2h_conn)
+    img = h2h_render.render_overall(
+        h2h_service.tour_table(h2h_conn, tour),
+        _emblem_path(lead) if lead else None,
+    )
+    return _png(img)
+
+
+def _standings_text() -> str:
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = ["🏆 <b>H2H — таблица</b>"]
+    for i, row in enumerate(h2h_service.standings(h2h_conn), 1):
+        prefix = medals.get(i, f"{i}.")
+        lines.append(
+            f"{prefix} <code>{h2h_service.name(row['key'])}</code> — "
+            f"<b>{row['points']}</b> очк. ({row['w']}-{row['d']}-{row['l']})"
+        )
+    return "\n".join(lines)
+
+
+async def _send_photos(chat_id: int, images: list[bytes], caption: str | None = None) -> None:
+    media = [
+        InputMediaPhoto(
+            media=BufferedInputFile(data, filename=f"h2h_{i}.jpg"),
+            caption=caption if i == 0 else None,
+            parse_mode="HTML" if i == 0 and caption else None,
+        )
+        for i, data in enumerate(images)
+    ]
+    await bot.send_media_group(chat_id, media)
+
+
+async def _send_tour_results(chat_id: int, tour: int) -> None:
+    images = _match_images(tour)
+    if images:
+        await _send_photos(chat_id, images)
+    await bot.send_photo(
+        chat_id,
+        BufferedInputFile(_overall_image(tour), filename=f"overall_{tour}.jpg"),
+        caption=f"📊 <b>Итоги {tour} тура</b>",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(Command("h2h"))
+async def cmd_h2h(message: types.Message):
+    await h2h_data.sync(h2h_conn)
+
+    parts = (message.text or "").split()
+    tour = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+
+    if tour is None:
+        finished = h2h_db.finished_tours(h2h_conn)
+        if not finished:
+            await message.answer("Пока нет завершённых туров.")
+            return
+        tour = finished[-1]
+
+    status = h2h_db.tour_status(h2h_conn, tour)
+    if status is None:
+        await message.answer(f"Тур {tour} не найден.")
+        return
+
+    if status != "FINISHED" or not h2h_db.tour_scores(h2h_conn, tour):
+        pairs = "\n".join(
+            f"• {h2h_service.name(a)} — {h2h_service.name(b)}"
+            for a, b in h2h_config.pairs_for_tour(tour)
+        )
+        await message.answer(f"📅 <b>Тур {tour}</b> — расписание\n{pairs}", parse_mode="HTML")
+        return
+
+    await _send_tour_results(message.chat.id, tour)
+    if len(parts) == 1:
+        await message.answer(_standings_text(), parse_mode="HTML")
+
+
+async def announce_h2h_results():
+    await h2h_data.sync(h2h_conn)
+
+    # При первом запуске не спамим всеми прошедшими турами.
+    if not h2h_db.get_meta(h2h_conn, "announced_init"):
+        for tour in h2h_db.finished_tours(h2h_conn):
+            h2h_db.set_meta(h2h_conn, f"announced:{tour}", "1")
+        h2h_db.set_meta(h2h_conn, "announced_init", "1")
+        h2h_conn.commit()
+        return
+
+    now = datetime.now(timezone.utc)
+    for tour in h2h_db.finished_tours(h2h_conn):
+        if h2h_db.get_meta(h2h_conn, f"announced:{tour}"):
+            continue
+        finished_at = h2h_db.tour_finished_at(h2h_conn, tour)
+        if not finished_at or now < finished_at + timedelta(hours=2):
+            continue
+        if not h2h_db.tour_scores(h2h_conn, tour):
+            continue
+
+        await _send_tour_results(GROUP_ID, tour)
+        await bot.send_message(GROUP_ID, _standings_text(), parse_mode="HTML")
+        h2h_db.set_meta(h2h_conn, f"announced:{tour}", "1")
+        h2h_conn.commit()
+
+
 async def send_reminder(text):
     try:
         await bot.send_message(GROUP_ID, text, parse_mode="HTML")
@@ -302,6 +442,11 @@ async def main():
     scheduler.add_job(
         schedule_deadlines, 'cron', hour="*/6", minute=5,
         id="refresh_deadlines", replace_existing=True, max_instances=1,
+    )
+    # H2H: проверяем, не закончился ли тур (+2 часа) и не пора ли постить итоги.
+    scheduler.add_job(
+        announce_h2h_results, 'interval', minutes=10,
+        id="h2h_results", replace_existing=True, max_instances=1,
     )
     await dp.start_polling(bot)
 
