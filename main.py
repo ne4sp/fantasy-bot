@@ -85,7 +85,8 @@ CLUBS = {
     696: {"name": "Тамбов", "nameShort": "ТАМ"},
     702: {"name": "Ахмат", "nameShort": "АХМ"},
     704: {"name": "Пари НН", "nameShort": "ПНН"},
-    807: {"name": "Акрон", "nameShort": "АКР"}
+    807: {"name": "Акрон", "nameShort": "АКР"},
+    808: {"name": "Родина", "nameShort": "РОД"}
 }
 
 API_TOKEN = os.getenv('MAIN_KEY')
@@ -181,34 +182,34 @@ async def get_league_table(message: types.Message):
 
     # Твой запрос (чуть подправил pageSize до 10)
     payload = {
-        "query": """
-        {
-          id_139457115: fantasyQueries {
-            rating {
-              squads(input: {
-                entityID: "59",
-                entityType: SEASON,
-                sortOrder: DESC,
-                leagueID: 30307,
-                pageSize: 10,
-                pageNum: 1
-              }) {
-                list {
-                  squad { name }
-                  scoreInfo { place score scoreForLastTour }
+            "query": """
+            {
+              id_225191701: fantasyQueries {
+                rating {
+                  squads(input: {
+                    entityID: "75",
+                    entityType: SEASON,
+                    sortOrder: DESC,
+                    leagueID: 42767,
+                    pageSize: 10,
+                    pageNum: 1
+                  }) {
+                    list {
+                      squad { name }
+                      scoreInfo { place score scoreForLastTour }
+                    }
+                  }
                 }
               }
             }
-          }
+            """
         }
-        """
-    }
 
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(url, json=payload, headers=headers)
             data = response.json()
-            items = data['data']['id_139457115']['rating']['squads']['list']
+            items = data['data']['id_225191701']['rating']['squads']['list']
 
             lines = ["🏆 <b>Бланш-на-Дону</b> 🍺\n"]
 
