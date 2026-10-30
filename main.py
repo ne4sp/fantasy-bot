@@ -48,7 +48,7 @@ MONTHS = {
 }
 
 
-GROUP_ID = -549417257
+GROUP_ID = int(os.getenv("GROUP_ID", "-549417257"))
 CLUBS = {
     1: {"name": "Спартак-Москва", "nameShort": "СПА"},
     2: {"name": "ПФК ЦСКА", "nameShort": "ЦСКА"},
