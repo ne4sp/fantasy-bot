@@ -105,6 +105,7 @@ scheduler = AsyncIOScheduler(timezone=MOSCOW)
 
 H2H_DB = os.getenv("H2H_DB", "h2h.db")
 h2h_conn = h2h_db.connect(H2H_DB)
+H2H_ANNOUNCE = os.getenv("H2H_ANNOUNCE", "1") != "0"
 
 
 async def get_deadline_data():
@@ -444,10 +445,12 @@ async def main():
         id="refresh_deadlines", replace_existing=True, max_instances=1,
     )
     # H2H: проверяем, не закончился ли тур (+2 часа) и не пора ли постить итоги.
-    scheduler.add_job(
-        announce_h2h_results, 'interval', minutes=10,
-        id="h2h_results", replace_existing=True, max_instances=1,
-    )
+    # H2H_ANNOUNCE=0 отключает автопостинг (нужно для дебаг-бота, чтобы не дублировать).
+    if H2H_ANNOUNCE:
+        scheduler.add_job(
+            announce_h2h_results, 'interval', minutes=10,
+            id="h2h_results", replace_existing=True, max_instances=1,
+        )
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
