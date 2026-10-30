@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+*.pyo
+.env
+.env.*
+.idea
+.vscode
+agent-sandbox.py
+sports-sandbox.py
+Dockerfile
+.dockerignore
+README.md
