@@ -12,8 +12,8 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 BG_MATCH = os.path.join(ASSETS, "bg", "match.png")
 BG_OVERALL = os.path.join(ASSETS, "bg", "overall.png")
-FONT_NAME = os.path.join(ASSETS, "fonts", "Inter.ttf")
-FONT_SCORE = os.path.join(ASSETS, "fonts", "PlayfairDisplay.ttf")
+FONT_NAME = os.path.join(ASSETS, "fonts", "SegoeUI.ttf")
+FONT_SCORE = os.path.join(ASSETS, "fonts", "ArethaBridge.ttf")
 EMBLEMS = os.path.join(ASSETS, "emblems")
 
 # Геометрия взята из слоёв PSD (bbox каждого текстового слоя).
@@ -24,13 +24,13 @@ MATCH_BOXES = {
     "lose_name": (469, 929, 964, 977),
 }
 OVERALL_NAMES_X = (22, 706)
-OVERALL_SCORES_X = (860, 915)
+OVERALL_SCORES_X = (800, 915)  # в PSD 55px — мало для двузначных очков
 OVERALL_FIRST_Y = 47
 OVERALL_ROW_H = 100
 OVERALL_TEXT_H = 65
 
-NAME_WEIGHT = 300   # Inter Light вместо Segoe UI Light
-SCORE_WEIGHT = 400  # Playfair Display вместо ArethaBridge
+NAME_WEIGHT = None  # Segoe UI Light
+SCORE_WEIGHT = None  # Aretha Bridge
 
 
 def _font(path: str, size: int, weight: int | None = None) -> ImageFont.FreeTypeFont:
