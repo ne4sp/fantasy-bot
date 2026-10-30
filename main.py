@@ -1,16 +1,31 @@
 import asyncio, httpx
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
-import time
-
-os.environ['TZ'] = 'Europe/Moscow'
-time.tzset()
 
 load_dotenv()
+
+# Время матчей в API РПЛ всегда в UTC, а вся логика бота — в московском времени.
+MOSCOW = ZoneInfo("Europe/Moscow")
+
+
+def parse_api_date(date_str: str) -> datetime:
+    """Разбирает дату из API РПЛ ("2026-10-31UTC17:30:00") в aware-время по Москве."""
+    cleaned = date_str.replace("UTC", " ").strip()
+    return (
+        datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
+        .replace(tzinfo=timezone.utc)
+        .astimezone(MOSCOW)
+    )
+
+
+def club_name(club_id: int) -> str:
+    club = CLUBS.get(club_id)
+    return club["name"] if club else f"Клуб {club_id}"
 
 
 WEEKDAYS = {
@@ -76,7 +91,8 @@ CLUBS = {
 API_TOKEN = os.getenv('MAIN_KEY')
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler()
+# Явно задаём таймзону, а не полагаемся на TZ/tzset (в slim-образе нет /usr/share/zoneinfo).
+scheduler = AsyncIOScheduler(timezone=MOSCOW)
 
 
 async def get_deadline_data():
@@ -110,9 +126,6 @@ async def get_deadline_data():
 
             all_matches = target_matches[0]['matches']
 
-            def parse_api_date(date_str):
-                return datetime.strptime(date_str.replace("UTC", " "), "%Y-%m-%d %H:%M:%S")
-
             earliest_match = min(all_matches, key=lambda x: parse_api_date(x['date']))
 
             return earliest_match
@@ -125,17 +138,13 @@ async def get_deadline_data():
 async def cmd_dl(message: types.Message):
     dt_f = await get_deadline_data()
 
-    def parse_api_date(date_str):
-        return datetime.strptime(date_str.replace("UTC", " "), "%Y-%m-%d %H:%M:%S")
-
-
     if not dt_f:
         await message.answer("❌ Не удалось найти ближайшие матчи. ❌")
         return
 
     dt = parse_api_date(dt_f['date'])
 
-    if dt < datetime.now():
+    if dt < datetime.now(MOSCOW):
         # Если матчей в этом туре больше нет (все в прошлом)
         response = (
             "🏁 <b>Дедлайн текущего тура уже прошёл!</b> 🏁\n"
@@ -144,9 +153,8 @@ async def cmd_dl(message: types.Message):
         )
         return await message.answer(response, parse_mode='HTML')
 
-    dt_h = CLUBS[dt_f['clubH']]['name']
-    dt_a = CLUBS[dt_f['clubA']]['name']
-
+    dt_h = club_name(dt_f['clubH'])
+    dt_a = club_name(dt_f['clubA'])
 
     weekday = WEEKDAYS[dt.weekday()]
 
@@ -238,31 +246,38 @@ async def send_reminder(text):
 
 
 async def schedule_deadlines():
+    """Планирует напоминания для ближайшего матча текущего тура.
+
+    Вызывается при старте и периодически (см. main), поэтому должна быть
+    идемпотентной: повторный вызов не создаёт дублей, а уже прошедшие
+    напоминания пропускает.
+    """
     dt_f = await get_deadline_data()
     if not dt_f:
         return
 
-    def parse_api_date(date_str):
-        return datetime.strptime(date_str.replace("UTC", " "), "%Y-%m-%d %H:%M:%S")
-
     dt = parse_api_date(dt_f['date'])
-    dt_h = CLUBS[dt_f['clubH']]['name']
-    dt_a = CLUBS[dt_f['clubA']]['name']
+    dt_h = club_name(dt_f['clubH'])
+    dt_a = club_name(dt_f['clubA'])
+    match_id = dt_f.get('id', f"{dt_f['clubH']}_{dt_f['clubA']}")
 
     day_str = f"{dt.day}-е {MONTHS[dt.month]}"
     time_str = dt.strftime("%H:%M")
 
-    now = datetime.now()
+    now = datetime.now(MOSCOW)
 
-    morning_time = dt.replace(hour=8, minute=10, second=0)
-    if morning_time > now:
+    morning_time = dt.replace(hour=8, minute=10, second=0, microsecond=0)
+    if now < morning_time < dt:
         text = (
             f"🔔 Сегодня дедлайн! 🔔\n"
             f"<b>{dt_h} — {dt_a}</b>\n"
             f"┕ <code> {day_str} ┃ {time_str}</code>\n"
-            f"┕ <a href='https://www.sports.ru/fantasy/football/russia/'>  <b>Твоя fantasy команда</code></b>"
+            f"┕ <a href='https://www.sports.ru/fantasy/football/russia/'>  <b>Твоя fantasy команда</b></a>"
         )
-        scheduler.add_job(send_reminder, 'date', run_date=morning_time, args=[text])
+        scheduler.add_job(
+            send_reminder, 'date', run_date=morning_time, args=[text],
+            id=f"morning_{match_id}", replace_existing=True,
+        )
 
     hour_before = dt - timedelta(hours=1)
     if hour_before > now:
@@ -272,11 +287,21 @@ async def schedule_deadlines():
             f"┕ <code> {day_str} ┃ {time_str}</code>\n"
             f"┕ <a href='https://www.sports.ru/fantasy/football/russia/'>  <b>Твоя fantasy команда</b></a>"
         )
-        scheduler.add_job(send_reminder, 'date', run_date=hour_before, args=[text_h])
+        scheduler.add_job(
+            send_reminder, 'date', run_date=hour_before, args=[text_h],
+            id=f"hour_before_{match_id}", replace_existing=True,
+        )
+
 
 async def main():
     scheduler.start()
     await schedule_deadlines()
+    # Перечитываем тур каждые 6 часов: иначе после смены тура напоминания
+    # для следующего матча никогда не запланируются (процесс живёт неделями).
+    scheduler.add_job(
+        schedule_deadlines, 'cron', hour="*/6", minute=5,
+        id="refresh_deadlines", replace_existing=True, max_instances=1,
+    )
     await dp.start_polling(bot)
 
 if __name__ == '__main__':

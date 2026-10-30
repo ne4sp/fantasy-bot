@@ -1,4 +1,7 @@
 .env
 .venv
 .idea
+__pycache__/
+*.pyc
 sports-sandbox.py
+agent-sandbox.py
