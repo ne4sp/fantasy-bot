@@ -316,7 +316,7 @@ async def _send_tour_results(chat_id: int, tour: int) -> None:
     await bot.send_photo(
         chat_id,
         BufferedInputFile(_overall_image(tour), filename=f"overall_{tour}.jpg"),
-        caption=f"📊 <b>Итоги {tour} тура</b>",
+        caption=f"📊 <b>Итоги {tour} тура</b> — очки H2H",
         parse_mode="HTML",
     )
 
