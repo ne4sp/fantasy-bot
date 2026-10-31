@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 sports-sandbox.py
 agent-sandbox.py
+*.db
+*.db-journal

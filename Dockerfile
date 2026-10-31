@@ -4,6 +4,6 @@ WORKDIR /usr/src/app/
 # copy project
 COPY . /usr/src/app/
 # install dependencies
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 # run app
 CMD ["python", "main.py"]
