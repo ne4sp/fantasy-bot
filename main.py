@@ -17,18 +17,15 @@ from h2h import service as h2h_service
 
 load_dotenv()
 
-# Время матчей в API РПЛ всегда в UTC, а вся логика бота — в московском времени.
+# В API РПЛ время уже московское, хотя в строке стоит суффикс "UTC"
+# (проверено: 2026-10-31UTC15:15:00 — это 15:15 МСК, а не 18:15).
 MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 def parse_api_date(date_str: str) -> datetime:
-    """Разбирает дату из API РПЛ ("2026-10-31UTC17:30:00") в aware-время по Москве."""
+    """Разбирает дату из API РПЛ ("2026-10-31UTC15:15:00") как время по Москве."""
     cleaned = date_str.replace("UTC", " ").strip()
-    return (
-        datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
-        .replace(tzinfo=timezone.utc)
-        .astimezone(MOSCOW)
-    )
+    return datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S").replace(tzinfo=MOSCOW)
 
 
 def club_name(club_id: int) -> str:
