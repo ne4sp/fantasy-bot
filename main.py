@@ -1,5 +1,6 @@
 import asyncio, httpx
 import io
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -16,6 +17,8 @@ from h2h import render as h2h_render
 from h2h import service as h2h_service
 
 load_dotenv()
+
+logger = logging.getLogger("fantasy-bot")
 
 # В API РПЛ время уже московское, хотя в строке стоит суффикс "UTC"
 # (проверено: 2026-10-31UTC15:15:00 — это 15:15 МСК, а не 18:15).
@@ -132,15 +135,22 @@ async def get_deadline_data():
             ]
 
             if not target_matches:
+                logger.warning(
+                    "get_deadline_data: в турнире %s нет стадии %s", t_id, s_id
+                )
                 return None
 
             all_matches = target_matches[0]['matches']
 
             earliest_match = min(all_matches, key=lambda x: parse_api_date(x['date']))
 
+            logger.debug(
+                "get_deadline_data: турнир %s, стадия %s, ближайший матч id=%s в %s",
+                t_id, s_id, earliest_match.get('id'), earliest_match.get('date'),
+            )
             return earliest_match
-        except Exception as e:
-            print(f"Ошибка: {e}")
+        except Exception:
+            logger.exception("get_deadline_data: не удалось получить данные о дедлайне")
             return None
 
 
@@ -342,10 +352,14 @@ async def announce_h2h_results():
 
     # При первом запуске не спамим всеми прошедшими турами.
     if not h2h_db.get_meta(h2h_conn, "announced_init"):
-        for tour in h2h_db.finished_tours(h2h_conn):
+        finished = h2h_db.finished_tours(h2h_conn)
+        for tour in finished:
             h2h_db.set_meta(h2h_conn, f"announced:{tour}", "1")
         h2h_db.set_meta(h2h_conn, "announced_init", "1")
         h2h_conn.commit()
+        logger.info(
+            "announce_h2h_results: первичная инициализация, помечено туров: %d", len(finished)
+        )
         return
 
     now = datetime.now(timezone.utc)
@@ -358,16 +372,20 @@ async def announce_h2h_results():
         if not h2h_db.tour_scores(h2h_conn, tour):
             continue
 
+        logger.info("announce_h2h_results: публикую итоги тура %s в %s", tour, GROUP_ID)
         await _send_tour_results(GROUP_ID, tour)
         h2h_db.set_meta(h2h_conn, f"announced:{tour}", "1")
         h2h_conn.commit()
+        logger.info("announce_h2h_results: итоги тура %s опубликованы", tour)
 
 
 async def send_reminder(text):
     try:
         await bot.send_message(GROUP_ID, text, parse_mode="HTML")
-    except Exception as e:
-        print(f"Ошибка отправки: {e}")
+    except Exception:
+        logger.exception("send_reminder: не удалось отправить напоминание в %s", GROUP_ID)
+    else:
+        logger.info("send_reminder: напоминание отправлено в %s (%d симв.)", GROUP_ID, len(text))
 
 
 async def schedule_deadlines():
@@ -379,6 +397,7 @@ async def schedule_deadlines():
     """
     dt_f = await get_deadline_data()
     if not dt_f:
+        logger.warning("schedule_deadlines: данные о дедлайне недоступны, планирование пропущено")
         return
 
     dt = parse_api_date(dt_f['date'])
@@ -403,6 +422,16 @@ async def schedule_deadlines():
             send_reminder, 'date', run_date=morning_time, args=[text],
             id=f"morning_{match_id}", replace_existing=True,
         )
+        logger.info(
+            "schedule_deadlines: утреннее напоминание по матчу %s (%s — %s) запланировано на %s",
+            match_id, dt_h, dt_a, morning_time.isoformat(),
+        )
+    else:
+        logger.info(
+            "schedule_deadlines: утреннее напоминание по матчу %s не планируется "
+            "(сейчас %s, время напоминания %s, дедлайн %s)",
+            match_id, now.isoformat(), morning_time.isoformat(), dt.isoformat(),
+        )
 
     hour_before = dt - timedelta(hours=1)
     if hour_before > now:
@@ -416,9 +445,31 @@ async def schedule_deadlines():
             send_reminder, 'date', run_date=hour_before, args=[text_h],
             id=f"hour_before_{match_id}", replace_existing=True,
         )
+        logger.info(
+            "schedule_deadlines: напоминание за час по матчу %s (%s — %s) запланировано на %s",
+            match_id, dt_h, dt_a, hour_before.isoformat(),
+        )
+    else:
+        logger.info(
+            "schedule_deadlines: напоминание за час по матчу %s не планируется "
+            "(сейчас %s, время напоминания %s)",
+            match_id, now.isoformat(), hour_before.isoformat(),
+        )
 
 
 async def main():
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    # aiogram логирует каждое обновление на INFO, httpx — каждый запрос: для прода это шум.
+    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logger.info(
+        "Старт бота: GROUP_ID=%s, H2H_ANNOUNCE=%s, H2H_DB=%s",
+        GROUP_ID, H2H_ANNOUNCE, H2H_DB,
+    )
+
     scheduler.start()
     await schedule_deadlines()
     # Перечитываем тур каждые 6 часов: иначе после смены тура напоминания
@@ -434,7 +485,15 @@ async def main():
             announce_h2h_results, 'interval', minutes=10,
             id="h2h_results", replace_existing=True, max_instances=1,
         )
+    for job in scheduler.get_jobs():
+        logger.info("Задача %s: следующий запуск %s", job.id, job.next_run_time)
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Остановка бота")
+    except Exception:
+        logger.exception("Бот упал с необработанной ошибкой")
+        raise
