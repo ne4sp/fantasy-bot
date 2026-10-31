@@ -22,18 +22,20 @@ WIN_POINTS = 3
 DRAW_POINTS = 1
 
 
-def _round_robin(keys: list[str]) -> list[list[tuple[str, str]]]:
-    """Круговой турнир (метод круга): n-1 туров по n/2 пар."""
-    n = len(keys)
-    arr = list(keys)
-    rounds = []
-    for _ in range(n - 1):
-        rounds.append([(arr[i], arr[n - 1 - i]) for i in range(n // 2)])
-        arr = [arr[0], arr[-1], *arr[1:-1]]
-    return rounds
-
-
-ROUNDS = _round_robin([p["key"] for p in PLAYERS])
+# Расписание, составленное вручную (5 туров, далее цикл повторяется).
+# В каждом туре каждый участник играет ровно один раз.
+ROUNDS = [
+    # 1 тур: Вовка–№6, Костик–Санек, Ванюша–Серега
+    [("vova", "sixth"), ("kostya", "sasha"), ("ivan", "serega")],
+    # 2 тур: Вовка–Санек, Серега–№6, Костик–Ванюша
+    [("vova", "sasha"), ("serega", "sixth"), ("kostya", "ivan")],
+    # 3 тур: Вовка–Серега, Санек–Ванюша, №6–Костик
+    [("vova", "serega"), ("sasha", "ivan"), ("sixth", "kostya")],
+    # 4 тур: Ванюша–Вовка, Костик–Серега, Санек–№6
+    [("ivan", "vova"), ("kostya", "serega"), ("sasha", "sixth")],
+    # 5 тур: Вовка–Костик, Ванюша–№6, Санек–Серега
+    [("vova", "kostya"), ("ivan", "sixth"), ("sasha", "serega")],
+]
 
 
 def pairs_for_tour(tour: int) -> list[tuple[str, str]]:
