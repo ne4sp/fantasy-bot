@@ -1,8 +1,10 @@
 import asyncio, httpx
+from html import escape as html_escape
 import io
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -152,6 +154,96 @@ async def get_deadline_data():
         except Exception:
             logger.exception("get_deadline_data: не удалось получить данные о дедлайне")
             return None
+
+
+async def get_match_lineups(match_id: int) -> dict[str, Any] | None:
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://premierliga.ru/",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(headers=headers, timeout=20) as client:
+            match_response = await client.post(
+                "https://api.premierliga.ru/api/getFullDataMatch",
+                json={"id": match_id},
+            )
+            match_response.raise_for_status()
+            match_data = match_response.json()
+
+            lineups_response = await client.post(
+                "https://api.premierliga.ru/api/getLineups",
+                json={"id": match_id},
+            )
+            lineups_response.raise_for_status()
+            lineups_data = lineups_response.json()
+    except Exception:
+        logger.exception("get_match_lineups: не удалось получить составы матча %s", match_id)
+        return None
+
+    protocol = lineups_data.get("protocol") or {}
+    teams = []
+    for side in ("clubH", "clubA"):
+        side_data = protocol.get(side) or {}
+        players_by_id = {
+            str(player["id"]): player
+            for player in side_data.get("players", [])
+            if player.get("id") is not None
+        }
+
+        def enrich_players(lineup: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [
+                {**players_by_id.get(str(player.get("id")), {}), **player}
+                for player in lineup
+            ]
+
+        club_id = match_data.get(side)
+        teams.append({
+            "club_id": club_id,
+            "name": club_name(int(club_id)) if club_id is not None else side,
+            "starting": enrich_players(side_data.get("main") or []),
+            "reserve": enrich_players(side_data.get("reserve") or []),
+        })
+
+    if not any(team["starting"] or team["reserve"] for team in teams):
+        logger.info("get_match_lineups: составы матча %s ещё не опубликованы", match_id)
+        return None
+
+    return {
+        "match_id": match_id,
+        "date": match_data.get("date"),
+        "status": match_data.get("status"),
+        "teams": teams,
+    }
+
+
+def format_match_lineups(lineups: dict[str, Any] | None) -> str:
+    if not lineups:
+        return "Стартовые составы пока не опубликованы."
+
+    lines = ["<b>Стартовые составы</b>"]
+    for team in lineups["teams"]:
+        lines.append(f"\n<b>{html_escape(team['name'])}</b>")
+        for title, field in (("Стартовый состав", "starting"), ("Запасные", "reserve")):
+            players = team.get(field) or []
+            if not players:
+                continue
+
+            lines.append(f"<i>{title}</i>")
+            for player in players:
+                first_name = player.get("public_name") or player.get("name") or ""
+                last_name = player.get("public_lastname") or player.get("lastname") or ""
+                player_name = " ".join(part for part in (first_name, last_name) if part)
+                if not player_name:
+                    player_name = f"Игрок {player.get('id', '?')}"
+
+                number = player.get("number")
+                prefix = f"{number}. " if number is not None else ""
+                captain = " (к)" if player.get("captain") else ""
+                lines.append(f"{prefix}{html_escape(player_name)}{captain}")
+
+    return "\n".join(lines)
 
 
 @dp.message(Command("dl"))
