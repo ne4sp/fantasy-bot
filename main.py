@@ -8,7 +8,18 @@ from typing import Any
 from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, InputMediaPhoto
+from aiogram.methods import SendRichMessage
+from aiogram.types import (
+    BufferedInputFile,
+    InputMediaPhoto,
+    InputRichBlockDivider,
+    InputRichBlockPhoto,
+    InputRichBlockSlideshow,
+    InputRichBlockTable,
+    InputRichBlockUnion,
+    InputRichMessage,
+    RichBlockTableCell,
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
@@ -17,6 +28,7 @@ from h2h import data as h2h_data
 from h2h import db as h2h_db
 from h2h import render as h2h_render
 from h2h import service as h2h_service
+from feature_tests import router as feature_tests_router
 
 load_dotenv()
 
@@ -102,6 +114,7 @@ CLUBS = {
 API_TOKEN = os.getenv('MAIN_KEY')
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+dp.include_router(feature_tests_router)
 # Явно задаём таймзону, а не полагаемся на TZ/tzset (в slim-образе нет /usr/share/zoneinfo).
 scheduler = AsyncIOScheduler(timezone=MOSCOW)
 
@@ -376,7 +389,7 @@ def _match_images(tour: int) -> list[bytes]:
 
 
 def _overall_image(tour: int) -> bytes:
-    """Общий зачёт H2H после тура N — картинкой, без текстовой таблицы."""
+    """Общий зачёт H2H после тура N."""
     lead = h2h_service.leader(h2h_conn, upto=tour)
     img = h2h_render.render_overall(
         h2h_service.table_rows(h2h_conn, upto=tour),
@@ -385,27 +398,83 @@ def _overall_image(tour: int) -> bytes:
     return _png(img)
 
 
-async def _send_photos(chat_id: int, images: list[bytes], caption: str | None = None) -> None:
-    media = [
-        InputMediaPhoto(
-            media=BufferedInputFile(data, filename=f"h2h_{i}.jpg"),
-            caption=caption if i == 0 else None,
-            parse_mode="HTML" if i == 0 and caption else None,
-        )
-        for i, data in enumerate(images)
+def _standings_blocks(tour: int) -> list[InputRichBlockUnion]:
+    standings = h2h_service.standings(h2h_conn, upto=tour)
+    cells = [
+        [
+            RichBlockTableCell(
+                align="center",
+                valign="middle",
+                text=label,
+                is_header=True,
+            )
+            for label in ("#", "Участник", "H2H-очки", "Фэнтези-очки", "В-Н-П")
+        ]
     ]
-    await bot.send_media_group(chat_id, media)
+    for place, row in enumerate(standings, start=1):
+        cells.append(
+            [
+                RichBlockTableCell(
+                    align="center",
+                    valign="middle",
+                    text=value,
+                )
+                for value in (
+                    str(place),
+                    h2h_service.name(row["key"]),
+                    str(row["points"]),
+                    str(row["score"]),
+                    f"{row['w']}-{row['d']}-{row['l']}",
+                )
+            ]
+        )
+    return [
+        InputRichBlockTable(
+            cells=cells,
+            caption=f"Таблица H2H после {tour}-го тура",
+            is_bordered=True,
+            is_striped=True,
+            is_compact=True,
+        )
+    ]
 
 
 async def _send_tour_results(chat_id: int, tour: int) -> None:
-    images = _match_images(tour)
-    if images:
-        await _send_photos(chat_id, images)
-    await bot.send_photo(
-        chat_id,
-        BufferedInputFile(_overall_image(tour), filename=f"overall_{tour}.jpg"),
-        caption=f"🏆 <b>Общий зачёт H2H после {tour} тура</b>",
-        parse_mode="HTML",
+    blocks: list[InputRichBlockUnion] = [
+        InputRichBlockPhoto(
+            photo=InputMediaPhoto(
+                media=BufferedInputFile(_overall_image(tour), filename=f"overall_{tour}.jpg"),
+                has_spoiler=True,
+            )
+        ),
+        InputRichBlockDivider(),
+    ]
+
+    match_images = _match_images(tour)
+    if match_images:
+        blocks.append(
+            InputRichBlockSlideshow(
+                blocks=[
+                    InputRichBlockPhoto(
+                        photo=InputMediaPhoto(
+                            media=BufferedInputFile(
+                                image,
+                                filename=f"match_{tour}_{index}.jpg",
+                            )
+                        )
+                    )
+                    for index, image in enumerate(match_images, start=1)
+                ]
+            )
+        )
+        blocks.append(InputRichBlockDivider())
+
+    blocks.extend(_standings_blocks(tour))
+    await bot(
+        SendRichMessage(
+            chat_id=chat_id,
+            rich_message=InputRichMessage(blocks=blocks),
+        )
     )
 
 
@@ -459,7 +528,7 @@ async def announce_h2h_results():
         if h2h_db.get_meta(h2h_conn, f"announced:{tour}"):
             continue
         finished_at = h2h_db.tour_finished_at(h2h_conn, tour)
-        if not finished_at or now < finished_at + timedelta(hours=2):
+        if not finished_at or now < finished_at + timedelta(minutes=5):
             continue
         if not h2h_db.tour_scores(h2h_conn, tour):
             continue

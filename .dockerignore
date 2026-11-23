@@ -14,3 +14,4 @@ Dockerfile
 .dockerignore
 README.md
 h2h.db
+devassets
